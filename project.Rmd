@@ -1,0 +1,127 @@
+---
+title: "Data Mining Course Project"
+author: "wangxhere"
+date: "13 Jun, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. The goal of this project is to predict the manner in which they did the exercise, which is a dumbell exercise of 6 participants. Sensing data are collected from accelerometers on the belt, forearm, arm, and dumbell.
+
+## Acquire Data and Load Dependencies
+Thanks to the provider of the data, which is available at http://groupware.les.inf.puc-rio.br/har.
+
+```{r, echo=TRUE, cache=TRUE}
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "training.csv")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "testing.csv")
+training <- read.csv("training.csv")
+testing <- read.csv("testing.csv")
+```
+
+We here use the following libaries, and at the same time, setting random seeds for reproducibility.
+```{r, warning=FALSE, echo=TRUE, message=FALSE}
+library(dplyr)
+library(caret)
+library(ggplot2)
+
+set.seed(12315)
+```
+
+## Exploring Dataset
+
+* Check NZV Columns
+
+```{r, echo=TRUE, cache=TRUE}
+nzv <- nearZeroVar(training, saveMetrics = TRUE)
+rownames(nzv[nzv$zeroVar == TRUE,])
+rownames(nzv[nzv$nzv == TRUE,])
+```
+As those nzv variables are providing no significant contribution to the machine learning procedure, we filter them out before preprocessing phase.
+
+```{r, echo=TRUE}
+training.sel <- training %>%
+  select(classe,
+         user_name,
+         roll_belt, pitch_belt, yaw_belt, total_accel_belt,
+         gyros_belt_x, gyros_belt_y, gyros_belt_z, 
+         accel_belt_x, accel_belt_y, accel_belt_z,
+         magnet_belt_x, magnet_belt_y, magnet_belt_z,
+         roll_arm, pitch_arm, yaw_arm, total_accel_arm,
+         gyros_arm_x, gyros_arm_y, gyros_arm_z,
+         accel_arm_x, accel_arm_y, accel_arm_z,
+         magnet_arm_x, magnet_arm_y, magnet_arm_z,
+         roll_dumbbell, pitch_dumbbell, yaw_dumbbell
+  )
+
+testing.sel <- testing %>%
+  select(user_name,
+         roll_belt, pitch_belt, yaw_belt, total_accel_belt,
+         gyros_belt_x, gyros_belt_y, gyros_belt_z, 
+         accel_belt_x, accel_belt_y, accel_belt_z,
+         magnet_belt_x, magnet_belt_y, magnet_belt_z,
+         roll_arm, pitch_arm, yaw_arm, total_accel_arm,
+         gyros_arm_x, gyros_arm_y, gyros_arm_z,
+         accel_arm_x, accel_arm_y, accel_arm_z,
+         magnet_arm_x, magnet_arm_y, magnet_arm_z,
+         roll_dumbbell, pitch_dumbbell, yaw_dumbbell
+  )
+```
+
+In order for the machine learning algorithm to perform easier, we assign numerical values to levels of the "classe" Factor.
+
+```{r, echo=TRUE}
+testing.sel$classe <- factor(c(1, 2, 3, 4, 5))
+levels(training.sel$classe) <- c(1, 2, 3, 4, 5)
+```
+
+In order to help the training sample to cover as many users as possible, we sample from training.sel according to both "classe" and "user_name".
+```{r, echo=TRUE}
+inTrain <- createDataPartition(interaction(training.sel$classe, training.sel$user_name), p=0.7, list=FALSE)
+
+train.set <- training.sel[inTrain,]
+validation.set <- training.sel[-inTrain,]
+```
+
+In order to reduce the time for training the model, we use PCA preprocessing to reduce the independent dimension. Also, in order to help the training cover as much part of variance as possible, we center and scale those data, which is a mixture of angular and linear measurements.
+```{r, echo=TRUE}
+preProc <- preProcess(train.set, method = c("center", "scale", "pca"), thresh = 0.99, na.remove = TRUE)
+
+train.pc <- predict(preProc, train.set)
+validation.pc <- predict(preProc, validation.set)
+```
+
+As for cross validation, we are replacing the default "boot" method of training control to "repeatedcv", for a more accurate control of validation set slicing.
+```{r, echo=TRUE}
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 10)
+```
+
+And then, we train the model with random forest method, as this is a regression problem with small size samples. After trying out different number of trees, it is decided that ntree=550 is a balance between training speed and accuracy.
+```{r, echo=TRUE, cache=TRUE, warning=FALSE}
+rfModel <- train(classe ~ .-(classe+user_name), data = train.pc, method = "rf", ntree = 550, trControl = fitControl)
+```
+
+After this, we use validation set that is selected previously, to generate a confusion matrix, in order to judge the accuracy of the model trained.
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+validation.pred.pc <- predict(rfModel, validation.pc)
+confusionMatrix(validation.set$classe, validation.pred.pc)
+```
+```{r, echo=TRUE}
+rfModel
+```
+
+As the confusion matrix shows, 95% CI of accuracy is 93.12% to 94.37%, which is high enough, but may not be too high to risk an over-trained model. From the model output we can also see the resampling is using cross-validated method. We hereby output the accuracy curve of this model's training procedure.
+```{r, echo=TRUE}
+ggplot(rfModel)
+```
+
+We then use this model for prediction of testing sets provided. As we used PCA to preprocess the model, we also need to pass testing set through the same PCA transformation.
+```{r, echo=TRUE, warning=FALSE}
+testing.pc <- predict(preProc, testing.sel)
+testing.pred.pc <- predict(rfModel, testing.pc)
+levels(testing.pred.pc) <- c("A", "B", "C", "D", "E")
+testing.pred.pc
+```
